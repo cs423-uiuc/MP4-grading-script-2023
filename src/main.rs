@@ -16,7 +16,7 @@ async fn tcp_server(port: u16) -> Result<(), Box<dyn Error>> {
     loop {
         tokio::select! {
             _ = &mut timeout_future => {
-                println!("Server timeout reached, shutting down.");
+                println!("TCP server timed out.");
             return Err("TCP server timed out".into());
             }
             Ok((mut stream, src)) = listener.accept() => {
@@ -70,32 +70,36 @@ async fn udp_server(port: u16) -> Result<(), Box<dyn Error>> {
     }
 }
 
-// Client to test connectivity
-async fn test_connectivity(port: u16) {
-    // Test TCP
-
-    match TcpStream::connect(("127.0.0.1", port)).await {
-        Ok(mut stream) => {
+async fn test_tcp_connectivity(port: u16) {
+    match timeout(TIMEOUT_DURATION, TcpStream::connect(("127.0.0.1", port))).await {
+        Ok(Ok(mut stream)) => {
             println!("TCP port {} is open", port);
             let msg = b"Hello from client";
-            stream.write_all(msg).await.unwrap();
-
-            let mut buf = [0; 1024];
-            match stream.read(&mut buf).await {
-                Ok(_) => println!("Received from server: {}", String::from_utf8_lossy(&buf)),
-                Err(e) => println!("Failed to receive: {}", e),
+            if let Err(e) = stream.write_all(msg).await {
+                eprintln!("Failed to write to TCP port {}: {}", port, e);
             }
         }
-        Err(e) => println!("TCP port {} is not open: {}", port, e),
+        Ok(Err(_)) => {
+            println!("TCP port {} is closed", port);
+        }
+        Err(_) => {
+            println!("Connection to TCP port {} timed out", port);
+        }
     }
+}
 
-    // Test UDP
+async fn test_udp_connectivity(port: u16) {
     let socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
     let msg = b"Hello from client";
     match socket.send_to(msg, ("127.0.0.1", port)).await {
         Ok(_) => println!("UDP datagram sent to port {}", port),
-        Err(e) => println!("Failed to send UDP datagram: {}", e),
+        Err(e) => println!("Failed to send UDP datagram to port {}: {}", port, e),
     }
+}
+
+// Client to test connectivity
+async fn test_connectivity(port: u16) {
+    tokio::join!(test_tcp_connectivity(port), test_udp_connectivity(port));
 }
 
 #[tokio::main]
@@ -103,13 +107,14 @@ async fn main() {
     let port = 8081; // Replace with the port you want to use
 
     let tcp_server = tokio::spawn(async move { tcp_server(port).await.unwrap() });
-
     let udp_server = tokio::spawn(async move { udp_server(port).await.unwrap() });
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Test connectivity
     test_connectivity(port).await;
 
     // Wait for servers to finish
-    tcp_server.await.unwrap();
     udp_server.await.unwrap();
+    tcp_server.await.unwrap();
 }
